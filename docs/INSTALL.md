@@ -28,9 +28,9 @@ port itself works on your console.
 2. In FileZilla connect to that IP, port **2121**, with empty user name and password, and set
    *Transfer → Transfer type → Binary* (text mode damages binary files).
 3. Create the folders `/data/edenps4/keys`, `/data/edenps4/firmware` and `/data/edenps4/roms`.
-4. Upload `prod.keys` (and `title.keys`) to `keys/`, the firmware `.nca` files to `firmware/` and
+4. Upload, in binary mode, `prod.keys` (and `title.keys`) to `keys/`, the firmware `.nca` files to `firmware/` and
    your games to `roms/`. The names must stay exactly as dumped (`prod.keys`, not `prod.keys.txt`).
-5. Upload the package to `/data/pkg/` (create it if needed), or put it on a USB drive.
+5. Upload the package to `/data/pkg/`, also in binary mode (create it if needed), or put it on a USB drive.
 
 ## Step 2: install the package
 
