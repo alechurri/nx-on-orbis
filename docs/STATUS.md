@@ -4,6 +4,10 @@ Written when the project was closed (2026-10-07). Everything measured comes from
 `mesa.log` captured on one PS4 Pro (firmware 12.02, GoldHEN), with Mario Kart 8 Deluxe (base game,
 NSP v0) as the main test title.
 
+**Why it stopped:** the author ran out of time to keep testing (every build has to be installed and
+played on the console by hand; 29 test builds went through that loop in five days). The work is
+published as-is so anyone can continue it.
+
 ## What the project set out to do
 
 1. Get Eden (Switch emulator) to build and run as a native PS4 application, reusing what the PS5
@@ -15,23 +19,68 @@ NSP v0) as the main test title.
 The hope was "playable". The honest expectation, given the CPU (see below), was always that a
 heavy 3D title like MK8D would run well below full speed.
 
-## What was reached
+## How far it was tested
 
-| Milestone | Test | Result |
+- **Hardware:** one PS4 Pro, firmware 12.02, GoldHEN. Never tested on a base PS4, a PS4 Slim, or
+  other firmwares.
+- **Software:** Mario Kart 8 Deluxe (base game, NSP v0, no update) as the main title; Cuphead up to
+  its menu and the start of a game; the bundled Homebrew Menu. No other games were tried.
+- **Mode:** handheld (720p internal), the default. Docked mode, higher resolutions, local
+  multiplayer, online, updates/DLC and saves across many sessions were not tested.
+- **Longest session:** about 15 minutes with MK8D (menus plus two-lap races) without crashing
+  (test 21). v0.1.0 was played the same way (tests 24 and the test 22 re-run).
+- **Not verified on the console:** v0.1.0 itself was rebuilt from the test 24 sources for the
+  release; the code is the same (identical function sizes), only version strings differ.
+
+## Expectations vs. results
+
+| Expectation | Result |
+|---|---|
+| Eden builds and runs as a native PS4 app | **Yes** (test 2) |
+| A commercial game boots | **Yes**: MK8D title screen and menus at 40-60 fps; Cuphead menu at ~30 fps |
+| MK8D gets into a race | **Yes** (test 21): races play, sound is clean |
+| Playable speed | **No**: 13-16 fps in races (60 is the game's target) |
+| Correct colors | **No**: red/blue swapped on 3D models and videos; UI correct |
+| Stable over a session | **Mostly**: ~15 min sessions; occasional hang/crash while a race loads (memory) |
+| Faster with fastmem | **Unknown**: works, but races stopped loading on that branch (memory) |
+
+## Every test on the console
+
+Each "test" is a package installed and run on the console, with `boot.log` / `mesa.log` /
+`eden_log.txt` sent back. Details of each one are in `dev-log-es.md` (Spanish).
+
+| Test | What changed | Result on the console |
 |---|---|---|
-| Probes: package layout, memory, JIT, GPU | probes 1-3 | Found the package layout that gets 4.4 GiB of direct memory and 2.1 GHz CPU clocks; RWX JIT memory works; double mapping works |
-| Eden runs | 2 | Homebrew Menu runs at full CPU speed, GPU draws at 26-29 fps |
-| First commercial game | 2-6 | MK8D title screen; menus at 40-60 fps after fixing memory use (fiber stacks, JIT caches) |
-| Own game picker | 8-9 | Up/Down + Cross menu on the video output |
-| GPU hangs on race load | 12-13 | Driver flattens each submission into a 2 MiB buffer: submit every 256 draws |
-| Texture cache corruption | 14-20 | Root cause: the SDK's `wmemchr` searches 16-bit units while the compiler's `wchar_t` is 32-bit; libc++ routes `std::find` over 4-byte types to it. Fixed by 4-byte replacements in the executable |
-| GPU out of memory on race load | 20-21 | GPU arena 1280 MiB, texture/buffer cache budgets sized to it, mid-frame collection |
-| **Races play** | **21** | Two laps, ~15 minutes without crashing, 10-27 fps, sound perfect |
-| Speed work | 22-24 | Jaguar-tuned build (`-march=btver2`), Android-like GPU defaults, sampling profiler, `cpu_accuracy=unsafe`, guest memory placed to limit fragmentation: races at 13-16 fps |
-| Fastmem | 25-29 | Works (experimental branch) but races no longer load: out of direct memory |
-
-Open: colors (red/blue swapped on 3D models and videos), speed, memory headroom, and one
-heap-corruption crash seen once (test 28).
+| probes 1-3 | eden-probe: package layouts, memory limits, JIT, double mapping, faults, GPU | Found the layout that gets 4.4 GiB and 2.1 GHz; JIT, aliasing and fault redirect work; largest address reservation 16 GiB |
+| 1 | First full build (Homebrew Menu) | Starts, opens the controller, crashes loading: static TLS laid out differently than the linker computed |
+| 2 | Emulated TLS, JIT in direct memory | **Eden runs**: Homebrew Menu at full CPU speed, GPU 26-29 fps. MK8D reaches the title screen; Cuphead runs but memory grows until it runs out |
+| 3 | Thread names for hang dumps | Diagnosis of the stalls (GPU thread waiting, CPU in memory callbacks) |
+| 4 | Memory fixes | Cuphead menu in 26 s (was 99) at 31-33 fps; out of memory when a game starts (Eden heap 1.18 GiB) |
+| 5 | Heap census in the log | Found it: 372 MiB of fiber stacks, big JIT tables, descriptor queues |
+| 6 | 512 KiB fiber stacks, 32 MiB JIT caches, game selector | MK8D menus at 40-60 fps; **colors red/blue swapped** first seen; races: GPU device lost |
+| 7 | Remove conditional rendering and indirect-count draws (GPU hangs) | Crash in the texture cache (LRU) at 108 s |
+| 8 | Game picker menu, BGRA self-test | Menu works; crash in the self-test (used the scheduler too early); console rebooted opening Cuphead |
+| 9 | Self-test on its own command buffer; menu keeps its framebuffers | BGRA sampling correct (not the color cause); race: device lost |
+| 10 | Async CPU ASTC, driver log (`mesa.log`) | Crash: upload into an already destroyed image (async ASTC) |
+| 11 | Synchronous CPU ASTC, 24-permutation component-mapping self-test | All 24 mappings correct (not the color cause); crash creating pipelines at startup (self-test side effect) |
+| 12 | Self-test off by default, VIC frame dump | `mesa.log` shows the cause of the device lost: submissions larger than the driver's 2 MiB buffer |
+| 13 | Submit every 256 draws / 96 uploads | No more GPU hangs; crash in the texture cache at 237 s |
+| 14 | Retirement fences, crash breadcrumbs (Codex) | Race does not load: crash beginning a render pass |
+| 15 | Page ownership fixes (Codex) | Crash creating a view of a deleted image |
+| 16 | R8G8 self-test, texture-cache traces | R8G8 not the color cause; same cache crash |
+| 17 | Mutex check, per-image history | Mutexes correct; cache entries vanish without being removed |
+| 18 | A2B10G10R10 self-test | Correct in every path (not the color cause); same cache crash |
+| 19 | `flat_map` check, re-read every page-table entry after insert | Found it: a value pushed into a vector is "not found" right after unless it is the first element |
+| 20 | 4-byte `wmemchr` & co. in the executable (the SDK's are 16-bit) | **Texture cache fixed** (zero inconsistencies); race load: GPU out of memory |
+| 21 | GPU arena 1280 MiB, cache budgets, mid-frame collection | **Races play**: two laps, ~15 min, 10-27 fps |
+| 22 | `-march=btver2`, Android GPU defaults, sampling profiler | First run hung after the menu (profiler deadlock); a re-run played races. Profile: CPU-bound in JIT code |
+| 23 | Profiler never logs from its signal handler | Not run on the console (superseded by 24) |
+| 24 | `cpu_accuracy=unsafe`, guest memory from the top of physical memory | **Races at 13-16 fps, stable**: this is v0.1.0 |
+| 25 | Fastmem, direct-memory map | Self-test passed, but the 512 GiB view was refused: fastmem not active; same speed |
+| 26 | Smaller views | Crash loading the game: the view starved the address space |
+| 27 | View capped (8 GiB fits) | **Fastmem active**; ran out of direct memory loading a race (hang) |
+| 28 | GPU arena 1152 MiB, redirect causes | Crash at startup: heap block holding the environment overwritten |
+| 29 | Environment out of the heap | Out of direct memory loading a race (crash in the driver). Last test |
 
 ## Where the time goes (race, v0.1.0)
 
