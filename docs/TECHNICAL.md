@@ -66,6 +66,8 @@ SDK. Measured on a PS4 Pro, firmware 12.02, GoldHEN. Several items apply to any 
   BUDGET lines say how many cores are busy and how long the CPU waited for the GPU.
 - Self-tests that all came out correct on the console (so not causes of the color bug): B8G8R8A8
   sampling and blits, all 24 component mappings (compute), R8G8, A2B10G10R10 sampling and rendering.
+  The color bug affects the whole image (3D, videos, UI); the presentation path (swapchain format
+  vs the format `wsi/orbis` registers for the video output, zero-copy scan-out) was never tested.
 
 ## JIT (dynarmic)
 

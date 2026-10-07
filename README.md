@@ -6,8 +6,8 @@ An experimental port of the **Eden** Nintendo Switch emulator (a yuzu fork) to a
 **PS4 Pro** (OpenOrbis toolchain, Mesa RADV Vulkan driver for the PS4 GPU).
 
 > **Status: closed experiment (stopped for lack of time), published so anyone can pick it up.** It boots, runs real games,
-> and Mario Kart 8 Deluxe plays full races, but at **13-16 fps** with wrong colors on 3D models
-> and videos. It is not a way to play Switch games on a PS4. Read [docs/STATUS.md](docs/STATUS.md)
+> and Mario Kart 8 Deluxe plays full races, but at **13-16 fps** with red and blue swapped in the
+> whole image. It is not a way to play Switch games on a PS4. Read [docs/STATUS.md](docs/STATUS.md)
 > for what was expected, what was reached, and the projected performance ceiling.
 
 | | |
@@ -40,7 +40,7 @@ it fast, then fix the colors. The first part was reached; speed and colors were 
 | A commercial game boots | Yes: MK8D menus at 40-60 fps, Cuphead menu at ~30 fps |
 | MK8D gets into a race | Yes: races play, sound is clean |
 | Playable speed | No: 13-16 fps in races (projected ceiling on this console ~20-25 fps) |
-| Correct colors | No: red/blue swapped on 3D models and videos |
+| Correct colors | No: red and blue are swapped in the whole image (3D, videos and UI) |
 
 **Tested on:** one PS4 Pro (firmware 12.02, GoldHEN); MK8D (base game), Cuphead (menu and game
 start) and the Homebrew Menu; handheld mode; sessions of about 15 minutes. **29 test builds** were
@@ -58,8 +58,9 @@ time to keep testing.
 
 ## What does not
 
-- **Colors**: red and blue are swapped on 3D models and in the game's videos (UI is correct).
-  Every driver-side cause tested so far was ruled out; see `docs/TECHNICAL.md`.
+- **Colors**: red and blue are swapped everywhere in the game image: 3D models, videos and UI.
+  The sampling/format causes tested were ruled out; the presentation path was never tested and is
+  now the first suspect. See `docs/STATUS.md`.
 - **Speed**: the emulated CPU is the bottleneck (the GPU is never waited on). See
   `docs/STATUS.md` for the profile and the projected ceiling.
 - **Memory**: a race uses ~4.5 GiB of the ~4.6 GiB of direct memory the PS4 gives the process.

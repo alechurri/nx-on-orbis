@@ -286,5 +286,8 @@ En la PS4 Pro de Alejo (FW 12.02 + GoldHEN):
 - Alejo decidió cerrar el proyecto y publicarlo como proyecto técnico abierto. Versión estable publicada: v0.1.0 = prueba 24
   (la última que entró en carrera sin fastmem). El trabajo de las pruebas 25-29 (fastmem, mapa de memoria directa,
   arena 1152 MiB, entorno fuera del heap) queda en la rama `experimental-fastmem`.
+- Colores, observación final en la consola: rojo y azul salen cambiados en TODA la imagen (3D, videos y UI), no solo
+  en 3D/video como se anotó en la prueba 6. Eso apunta al camino de presentación (formato del swapchain contra el
+  formato con que `wsi/orbis` registra el buffer de video, scan-out sin copia), que nunca se probó.
 - Conclusión honesta: con la CPU Jaguar el techo proyectado para MK8D en carrera es ~20-25 fps; 60 fps no es alcanzable
   y 30 fps estables es poco probable. Juegos más livianos sí pueden andar bien. Ver docs/STATUS.md.

@@ -40,7 +40,7 @@ heavy 3D title like MK8D would run well below full speed.
 | A commercial game boots | **Yes**: MK8D title screen and menus at 40-60 fps; Cuphead menu at ~30 fps |
 | MK8D gets into a race | **Yes** (test 21): races play, sound is clean |
 | Playable speed | **No**: 13-16 fps in races (60 is the game's target) |
-| Correct colors | **No**: red/blue swapped on 3D models and videos; UI correct |
+| Correct colors | **No**: red and blue swapped in the whole image (3D, videos and UI) |
 | Stable over a session | **Mostly**: ~15 min sessions; occasional hang/crash while a race loads (memory) |
 | Faster with fastmem | **Unknown**: works, but races stopped loading on that branch (memory) |
 
@@ -149,13 +149,24 @@ grow by several hundred MiB while a race loads. About 100 MiB stay free. See `TE
 
 ## Colors: what was ruled out
 
-Red and blue are swapped on characters, karts and the game's videos (decoded YUV converted by the
-game's own shader into A2B10G10R10 render targets); the UI is correct. Tested and correct on the
-console, so not the cause: B8G8R8A8 sampling and blits, all 24 component-mapping permutations
-(compute self-test), R8G8 sampling, A2B10G10R10 sampling and rendering (both orders), ASTC decode
-on the CPU, the swapchain. The VIC (video decoder) output frame was dumped and is correct on a PC.
-Still open: Eden's shader translation for this GPU's feature set (no float16, etc.) or something in
-how the game's YUV->RGB shader is translated.
+Red and blue are swapped in the **whole game image**: characters, karts, the game's videos and the
+UI. (An early test, 6, noted the yellow UI as correct, and the investigation followed the 3D and
+video paths from there; the final observation on the console is that everything is swapped.)
+
+Tested on the console and correct, so not the cause: B8G8R8A8 sampling and blits, all 24
+component-mapping permutations (compute self-test), R8G8 sampling, A2B10G10R10 sampling and
+rendering (both orders), ASTC decode on the CPU. The VIC (video decoder) output frame was dumped
+and is correct on a PC.
+
+**Never tested: the presentation path**, which is now the first suspect, since a swap of the whole
+image points to the last step. Eden renders the final frame into a Vulkan swapchain image, and the
+driver's `wsi/orbis` hands it to the video output with zero copy (`mesa.log`: "scan-out up -
+1920x1080 ... A8B8G8R8_SRGB linear - ZERO COPY"). If the video-out buffer is registered with a
+pixel format whose byte order differs from the swapchain format Eden chose, every pixel comes out
+with red and blue exchanged. Things to check: the swapchain format Eden picks on this device versus
+what `wsi/orbis` registers with `sceVideoOutRegisterBuffers`; whether the frontend's own game picker
+(drawn with `sceVideoOut` directly) shows correct colors; a test frame of known colors presented
+through Eden's swapchain; forcing the other surface format.
 
 ## If you want to continue
 
@@ -166,5 +177,5 @@ how the game's YUV->RGB shader is translated.
    release: `llvm-symbolizer --obj=nx-on-orbis-v0.1.0.elf -C -f 0x<offset>`.
 3. Most promising for speed: the fastmem redirect storm, then memory headroom so races load with
    fastmem on.
-4. Most promising for colors: compare Eden's SPIR-V for MK8D's 3D and video shaders between a PC
-   and this GPU profile.
+4. Most promising for colors: the presentation path (swapchain format vs the video-out buffer
+   format), see "Colors" above.
