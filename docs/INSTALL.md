@@ -1,44 +1,62 @@
 # Installing
 
 Tested only on a **PS4 Pro, firmware 12.02, GoldHEN**. Other firmwares or a base PS4 may or may not
-work (a base PS4 would also be slower).
+work (a base PS4 would also be slower). Read [STATUS.md](STATUS.md) first: this is a closed
+experiment, games run but slowly and with wrong colors.
 
-## 1. The package
+Do the steps in this order: the files go on the console **before** the package is installed, so
+the first start already finds them.
 
-1. Download `nx-on-orbis-v0.1.0.pkg` from the release.
-2. Copy it to the console with FTP in **binary** mode (FileZilla works; some clients corrupt binary
-   files), for example to `/data/pkg/`, and install it with GoldHEN's package installer.
-3. It shows up as **NX on Orbis** (title ID `EDPS00001`).
+## What you need
 
-The package contains the emulator, the OpenOrbis sample system modules every OpenOrbis homebrew
-ships (`libc.prx`, `libSceFios2.prx`, `right.sprx`), and the Homebrew Menu (nx-hbmenu, ISC license),
-which starts when no game is installed and needs no keys. It contains no keys, firmware or games.
+| File | Where it comes from | Where it goes on the PS4 |
+| --- | --- | --- |
+| `prod.keys` (and `title.keys` if you have it) | dumped **from your own Switch** with Lockpick_RCM | `/data/edenps4/keys/` |
+| the firmware `.nca` files | dumped **from your own Switch** (TegraExplorer / NXDumpTool) | `/data/edenps4/firmware/` |
+| your games, `.nsp` or `.xci` | your own cartridges or eShop purchases | `/data/edenps4/roms/` |
+| `nx-on-orbis-v0.1.0.pkg` | the [Releases page](https://github.com/alechurri/nx-on-orbis/releases) | installed as a package |
 
-## 2. Your files
+Nothing of the above is included in this project, and nobody here can provide it.
 
-Everything lives under `/data/edenps4/` (created on first start):
+Without keys and firmware the bundled Homebrew Menu still runs, which is a quick way to check the
+port itself works on your console.
 
-| Path | What |
-|---|---|
-| `keys/prod.keys` (+ `title.keys`) | Keys dumped **from your own Switch** (Lockpick_RCM) |
-| `firmware/*.nca` | Firmware dumped **from your own Switch** (TegraExplorer / NXDumpTool); copied into the emulated NAND on first start |
-| `roms/*.nsp`, `roms/*.xci` | Your games; listed in a menu at start |
-| `updates/` | Update and DLC NSPs, applied when the game starts |
-| `game.txt` | Optional: full path of a game to start directly |
-| `nomenu.txt` | Optional: skip the game menu and start the last game played |
-| `settings.txt` | Optional overrides, one `key=value` per line (below) |
+## Step 1: copy your files over FTP
 
-## 3. Using it
+1. On the PS4, with GoldHEN loaded: *Settings → GoldHEN → Server Settings → Enable FTP Server*.
+   Note the console's IP address.
+2. In FileZilla connect to that IP, port **2121**, with empty user name and password, and set
+   *Transfer → Transfer type → Binary* (text mode damages binary files).
+3. Create the folders `/data/edenps4/keys`, `/data/edenps4/firmware` and `/data/edenps4/roms`.
+4. Upload `prod.keys` (and `title.keys`) to `keys/`, the firmware `.nca` files to `firmware/` and
+   your games to `roms/`. The names must stay exactly as dumped (`prod.keys`, not `prod.keys.txt`).
+5. Upload the package to `/data/pkg/` (create it if needed), or put it on a USB drive.
 
-- Game menu: Up/Down to choose, Cross to start.
-- Controls (Switch layout by position): Circle = A, Cross = B, Triangle = X, Square = Y, L1/R1 = L/R,
-  L2/R2 = ZL/ZR, Options = +, touch pad click = -, L3/R3 = sticks.
-- Hold **Options + touch pad for 2 seconds** to quit.
-- The first runs of a game stutter while shaders compile; they are cached for later runs.
+## Step 2: install the package
 
-## 4. settings.txt (optional)
+*Settings → GoldHEN → Package Installer* (or *Debug Settings → Game → Package Installer*), pick
+`nx-on-orbis-v0.1.0.pkg` and install it. It appears as **NX on Orbis** (title ID `EDPS00001`).
+Installing a newer package over it keeps everything in `/data/edenps4/`.
 
-Lines are `key=value`; `#` starts a comment. Each recognized line is logged in `boot.log`.
+## Step 3: play
+
+1. Start **NX on Orbis**. The first start copies the firmware into its emulated system memory,
+   which takes a moment.
+2. Pick a game with Up/Down and press Cross.
+3. The first runs of a game stutter while shaders compile; they are cached for later runs.
+
+Controls (Switch layout by position): Circle = A, Cross = B, Triangle = X, Square = Y, L1/R1 = L/R,
+L2/R2 = ZL/ZR, Options = +, touch pad click = -, L3/R3 = sticks. Hold **Options + touch pad for 2
+seconds** to quit.
+
+## Optional files
+
+| File in `/data/edenps4/` | Effect |
+| --- | --- |
+| `updates/` | update and DLC `.nsp` files, applied when the game starts |
+| `game.txt` | full path of a game to start directly |
+| `nomenu.txt` (empty) | skip the game menu and start the last game played |
+| `settings.txt` | overrides, one `key=value` per line (below) |
 
 | Key | Values (default first) | What |
 |---|---|---|
@@ -53,15 +71,19 @@ Lines are `key=value`; `#` starts a comment. Each recognized line is logged in `
 | `bgra`, `rg`, `a2b10`, `swizzle` | see `frontend/main.cpp` | color self-tests and workarounds (diagnostics) |
 | `env` | `NAME=VALUE` | environment for the GPU driver, e.g. `env=ORBIS_ARENA_MIB=1280` |
 
-## 5. Logs (for bug hunting)
+## Troubleshooting
 
-- `/data/edenps4/boot.log`: startup checks, a status line every 10 s (fps, memory), the profiler
-  every 30 s, and crash reports (registers + `eboot+0x...` backtrace). The previous run is kept as
-  `boot.old.log`.
-- `/data/edenps4/mesa.log`: the GPU driver's log (previous run: `mesa.old.log`).
-- `/data/edenps4/log/eden_log.txt`: Eden's own log.
+Everything is logged to `/data/edenps4/boot.log` (the previous run is `boot.old.log`). Download it
+before starting the app again.
 
-Symbolize crash offsets with the ELF from the same release:
-`llvm-symbolizer --obj=nx-on-orbis-v0.1.0.elf -C -f 0x<offset>`.
+| Line in `boot.log` | Meaning |
+| --- | --- |
+| `missing /data/edenps4/keys/prod.keys - dump it from your Switch` | the keys are not where step 1 puts them, or the file name differs |
+| `no firmware/ folder; games that need the firmware will not start` | the firmware folder is missing |
+| `firmware: N NCAs installed now, ... M failed` | some firmware files could not be copied (damaged or incomplete dump) |
+| `no game: put an .nsp or .xci in /data/edenps4/roms` | no game found: the Homebrew Menu starts instead |
+| `!! CRASH ...` followed by `eboot+0x...` lines | a crash; symbolize the offsets with the release's ELF: `llvm-symbolizer --obj=nx-on-orbis-v0.1.0.elf -C -f 0x<offset>` |
+
+Other logs: `/data/edenps4/mesa.log` (GPU driver) and `/data/edenps4/log/eden_log.txt` (Eden).
 
 Please do not send reports about this port to the Eden project.
