@@ -1,7 +1,7 @@
 From f206c03d74c7e36d61b0cb21e75d4218227c8ee9 Mon Sep 17 00:00:00 2001
 From: alechurri <337117637+alechurri@users.noreply.github.com>
 Date: Sat, 3 Oct 2026 22:23:05 -0300
-Subject: [PATCH 04/27] Fixes taken from ProsperoEden: homebrew without control
+Subject: [PATCH 04/31] Fixes taken from ProsperoEden: homebrew without control
  data, shutdown order, failed-load unwind, fibers, per-load program id
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

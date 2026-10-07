@@ -1,5 +1,7 @@
 # NX on Orbis
 
+> **This is the `experimental-fastmem` branch** (tests 25-29), not the release. Fastmem works, but races no longer load (direct memory runs out). For the build that reaches races use `main` / v0.1.0. Details in [docs/STATUS.md](docs/STATUS.md#the-experimental-branch-tests-25-29).
+
 An experimental port of the **Eden** Nintendo Switch emulator (a yuzu fork) to a jailbroken
 **PS4 Pro** (OpenOrbis toolchain, Mesa RADV Vulkan driver for the PS4 GPU).
 
@@ -11,7 +13,7 @@ An experimental port of the **Eden** Nintendo Switch emulator (a yuzu fork) to a
 | | |
 |---|---|
 | Console | PS4 Pro, firmware 12.02, GoldHEN (the only console it was tested on) |
-| Base | Eden `5f142c79` (the commit the PS5 port ProsperoEden pins) + 27 patches in `patches/eden/` |
+| Base | Eden `5f142c79` (the commit the PS5 port ProsperoEden pins) + 31 patches in `patches/eden/` |
 | Toolchain | OpenOrbis 0.5.4 + [orbis-sdk-v1](https://github.com/orbis-ports/orbis-porting-kit/releases/tag/orbis-sdk-v1) (orbis-compat, Mesa RADV for "Liverpool" GFX7), LLVM 18, libc++ 18 built for the PS4 |
 | Release | [v0.1.0](../../releases/tag/v0.1.0): `.pkg` + the exact ELF (for symbolizing crash logs) |
 | License | GPL-3.0-or-later (see `LICENSE` and `NOTICE.md`) |

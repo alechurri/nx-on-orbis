@@ -1,7 +1,7 @@
 From dc3f97f902a92107de3c3d4f45e838a44df835cc Mon Sep 17 00:00:00 2001
 From: alechurri <337117637+alechurri@users.noreply.github.com>
 Date: Sat, 3 Oct 2026 22:26:23 -0300
-Subject: [PATCH 05/27] PS4: dynarmic code buffers from direct memory promoted
+Subject: [PATCH 05/31] PS4: dynarmic code buffers from direct memory promoted
  to RWX
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

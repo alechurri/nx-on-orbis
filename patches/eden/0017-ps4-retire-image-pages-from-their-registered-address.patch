@@ -1,7 +1,7 @@
 From b13770967606f0c45150463538e41d9eb693cf14 Mon Sep 17 00:00:00 2001
 From: alechurri <337117637+alechurri@users.noreply.github.com>
 Date: Sun, 4 Oct 2026 18:19:17 -0300
-Subject: [PATCH 17/27] ps4: retire image pages from their registered address
+Subject: [PATCH 17/31] ps4: retire image pages from their registered address
  space
 
 ---

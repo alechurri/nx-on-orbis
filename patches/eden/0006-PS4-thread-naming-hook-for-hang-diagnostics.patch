@@ -1,7 +1,7 @@
 From f31ca13505795c48b61787c033c6078c47217ab4 Mon Sep 17 00:00:00 2001
 From: alechurri <337117637+alechurri@users.noreply.github.com>
 Date: Sat, 3 Oct 2026 23:35:27 -0300
-Subject: [PATCH 06/27] PS4: thread naming hook for hang diagnostics
+Subject: [PATCH 06/31] PS4: thread naming hook for hang diagnostics
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---

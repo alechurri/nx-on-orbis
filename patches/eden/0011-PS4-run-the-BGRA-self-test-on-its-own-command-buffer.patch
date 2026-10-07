@@ -1,7 +1,7 @@
 From 56e99455fb3fb9259af0180b5b9ebb5f4eca6fa7 Mon Sep 17 00:00:00 2001
 From: alechurri <337117637+alechurri@users.noreply.github.com>
 Date: Sun, 4 Oct 2026 09:43:08 -0300
-Subject: [PATCH 11/27] PS4: run the BGRA self-test on its own command buffer
+Subject: [PATCH 11/31] PS4: run the BGRA self-test on its own command buffer
  (the scheduler cannot submit yet)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

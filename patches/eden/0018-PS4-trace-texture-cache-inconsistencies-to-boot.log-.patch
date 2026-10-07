@@ -1,7 +1,7 @@
 From 3958dbe9f5241a1b736f0957e750dacabfc322e5 Mon Sep 17 00:00:00 2001
 From: alechurri <337117637+alechurri@users.noreply.github.com>
 Date: Tue, 6 Oct 2026 10:21:26 -0300
-Subject: [PATCH 18/27] PS4: trace texture-cache inconsistencies to boot.log;
+Subject: [PATCH 18/31] PS4: trace texture-cache inconsistencies to boot.log;
  never create a view of a deleted image
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

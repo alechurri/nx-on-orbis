@@ -1,7 +1,7 @@
 From b6ceb70dae50b2489ef24cef8544317bdb71bf52 Mon Sep 17 00:00:00 2001
 From: alechurri <337117637+alechurri@users.noreply.github.com>
 Date: Tue, 6 Oct 2026 13:30:00 -0300
-Subject: [PATCH 22/27] PS4: A2B10G10R10 render/sample self-test with automatic
+Subject: [PATCH 22/31] PS4: A2B10G10R10 render/sample self-test with automatic
  view workarounds; per-frame texture-cache audit with page-level history; fix
  SlotVector::begin distance
 

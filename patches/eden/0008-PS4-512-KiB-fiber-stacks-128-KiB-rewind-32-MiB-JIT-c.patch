@@ -1,7 +1,7 @@
 From 15226ea42b986256e0b4656b46a66a296418b622 Mon Sep 17 00:00:00 2001
 From: alechurri <337117637+alechurri@users.noreply.github.com>
 Date: Sun, 4 Oct 2026 01:41:57 -0300
-Subject: [PATCH 08/27] PS4: 512 KiB fiber stacks (128 KiB rewind), 32 MiB JIT
+Subject: [PATCH 08/31] PS4: 512 KiB fiber stacks (128 KiB rewind), 32 MiB JIT
  caches
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

@@ -78,4 +78,8 @@ std::uint64_t NowUs();
 /// Direct and flexible memory still free, for the periodic status line.
 std::uint64_t FreeDirectMemory();
 
+/// Walks the whole of direct memory and logs what is allocated and free (total, not just the
+/// largest block), plus every allocation of 2 MiB or more that appeared since the last walk.
+void LogDirectMemoryMap();
+
 } // namespace Ps4

@@ -1,7 +1,7 @@
 From 516f7e73a516a1e11feee545c1367112406ccad7 Mon Sep 17 00:00:00 2001
 From: alechurri <337117637+alechurri@users.noreply.github.com>
 Date: Sun, 4 Oct 2026 12:40:11 -0300
-Subject: [PATCH 15/27] PS4: submit smaller command buffers (the driver
+Subject: [PATCH 15/31] PS4: submit smaller command buffers (the driver
  flattens each submission into 2 MiB)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

@@ -1,0 +1,679 @@
+From d3fffd07b92e92984ef55b89a03053499f95b428 Mon Sep 17 00:00:00 2001
+From: alechurri <337117637+alechurri@users.noreply.github.com>
+Date: Tue, 6 Oct 2026 20:38:33 -0300
+Subject: [PATCH 28/31] ORBIS: fastmem - guest address space view aliasing the
+ lazy backing
+
+16 KiB view pages map the backing on first touch when their four guest pages are consecutive
+and readable; other faults go to dynarmic's slow path through a PS4 exception handler. A
+startup self-test (aliasing, mprotect, rip/rsp redirect) gates it.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/common/host_memory.cpp                    |  26 +-
+ src/common/orbis_lazy_memory.cpp              | 377 ++++++++++++++++++
+ src/common/orbis_lazy_memory.h                |  36 ++
+ src/dynarmic/src/dynarmic/CMakeLists.txt      |   3 +
+ .../backend/exception_handler_orbis.cpp       | 112 ++++++
+ 5 files changed, 553 insertions(+), 1 deletion(-)
+ create mode 100644 src/dynarmic/src/dynarmic/backend/exception_handler_orbis.cpp
+
+diff --git a/src/common/host_memory.cpp b/src/common/host_memory.cpp
+index 30a15c5..ebbd946 100644
+--- a/src/common/host_memory.cpp
++++ b/src/common/host_memory.cpp
+@@ -716,7 +716,13 @@ HostMemory::HostMemory(size_t backing_size_, size_t virtual_size_)
+     backing_base = static_cast<u8*>(Common::Orbis::ReserveLazy(backing_size, "guest RAM"));
+     ASSERT_MSG(backing_base, "Failed to reserve {:#x} bytes for the guest RAM", backing_size);
+     Common::Orbis::SetGuestRamBase(backing_base, backing_size);
+-    virtual_base = nullptr;
++    // Fastmem (test 25): a view of the guest address space whose pages alias the backing; only
++    // when the startup self-test passed (Common::Orbis::FastmemSelfTest), otherwise nullptr.
++    virtual_base = static_cast<u8*>(Common::Orbis::ReserveView(virtual_size));
++    if (virtual_base) {
++        LOG_INFO(HW_Memory, "PS4 fastmem view: {} GiB at {}", virtual_size >> 30,
++                 fmt::ptr(virtual_base));
++    }
+ #elif defined(__OPENORBIS__) || defined(__managarm__)
+     LOG_WARNING(HW_Memory, "Platform doesn't support fastmem");
+     backing_base = static_cast<u8*>(mmap(nullptr, backing_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
+@@ -759,6 +765,13 @@ HostMemory::HostMemory(HostMemory&&) noexcept = default;
+ HostMemory& HostMemory::operator=(HostMemory&&) noexcept = default;
+ 
+ void HostMemory::Map(size_t virtual_offset, size_t host_offset, size_t length, MemoryPermission perms, bool separate_heap) {
++#ifdef __ORBIS__
++    if (virtual_base && length != 0) {
++        Common::Orbis::ViewMap(virtual_offset, host_offset, length,
++                               True(perms & MemoryPermission::Read),
++                               True(perms & MemoryPermission::Write));
++    }
++#endif
+ #if !(defined(__OPENORBIS__) || defined(__managarm__) || defined(__ORBIS__))
+     ASSERT(virtual_offset % PageAlignment == 0);
+     ASSERT(host_offset % PageAlignment == 0);
+@@ -773,6 +786,11 @@ void HostMemory::Map(size_t virtual_offset, size_t host_offset, size_t length, M
+ }
+ 
+ void HostMemory::Unmap(size_t virtual_offset, size_t length, bool separate_heap) {
++#ifdef __ORBIS__
++    if (virtual_base && length != 0) {
++        Common::Orbis::ViewUnmap(virtual_offset, length);
++    }
++#endif
+ #if !(defined(__OPENORBIS__) || defined(__managarm__) || defined(__ORBIS__))
+     ASSERT(virtual_offset % PageAlignment == 0);
+     ASSERT(length % PageAlignment == 0);
+@@ -785,6 +803,12 @@ void HostMemory::Unmap(size_t virtual_offset, size_t length, bool separate_heap)
+ }
+ 
+ void HostMemory::Protect(size_t virtual_offset, size_t length, MemoryPermission perm) {
++#ifdef __ORBIS__
++    if (virtual_base && length != 0) {
++        Common::Orbis::ViewProtect(virtual_offset, length, True(perm & MemoryPermission::Read),
++                                   True(perm & MemoryPermission::Write));
++    }
++#endif
+ #if !(defined(__OPENORBIS__) || defined(__managarm__) || defined(__ORBIS__))
+     ASSERT(virtual_offset % PageAlignment == 0);
+     ASSERT(length % PageAlignment == 0);
+diff --git a/src/common/orbis_lazy_memory.cpp b/src/common/orbis_lazy_memory.cpp
+index 3e585d4..6627098 100644
+--- a/src/common/orbis_lazy_memory.cpp
++++ b/src/common/orbis_lazy_memory.cpp
+@@ -7,6 +7,7 @@
+ // access retried (about 5 us per fault).
+ 
+ #include <atomic>
++#include <cstdio>
+ #include <cstring>
+ #include <new>
+ 
+@@ -22,6 +23,7 @@ int32_t sceKernelMapDirectMemory(void** addr, size_t len, int32_t prot, int32_t
+ int32_t sceKernelReleaseDirectMemory(off_t phys, size_t len);
+ int32_t sceKernelReserveVirtualRange(void** addr, size_t len, int32_t flags, size_t alignment);
+ int32_t sceKernelMunmap(void* addr, size_t len);
++int32_t sceKernelMprotect(const void* addr, size_t len, int prot);
+ size_t sceKernelGetDirectMemorySize(void);
+ int sceKernelInstallExceptionHandler(int signal, void (*handler)(int, void*));
+ }
+@@ -121,6 +123,174 @@ bool CommitAddress(std::uintptr_t addr) {
+     return CommitChunkLocked(*r, (addr - r->base) / Chunk);
+ }
+ 
++// ---- fastmem view ---------------------------------------------------------------------------
++// One entry per 16 KiB view page, in second-level tables of one GiB each (allocated when a guest
++// mapping first lands there). Entry layout:
++//   bits  0..31  backing page (offset into the guest RAM backing / 16 KiB)
++//   bits 32..35  4 KiB guest page mapped here (by ViewMap, cleared by ViewUnmap)
++//   bits 36..39  ... readable
++//   bits 40..43  ... writable
++//   bits 48..49  what the host has: 0 nothing (reserved), 1 mapped read-only, 2 read-write
++// All of it under g_lock, like the chunk tables.
++constexpr std::size_t ViewPage = 16 * 1024;
++constexpr std::size_t SubPage = 4 * 1024;
++constexpr std::size_t ViewSpanBits = 30;
++constexpr std::size_t PagesPerSpan = (std::size_t{1} << ViewSpanBits) / ViewPage;
++constexpr std::uint64_t ValidShift = 32, ReadShift = 36, WriteShift = 40, HostShift = 48;
++constexpr int ProtRead = 0x01, ProtReadWrite = 0x03;
++
++std::atomic<bool> g_fastmem_ok{false};
++std::uintptr_t g_view_base = 0;
++std::size_t g_view_size = 0;
++std::uint64_t** g_view_tables = nullptr; // g_view_size >> 30 pointers
++std::atomic<JitFaultHandler> g_jit{nullptr};
++std::atomic<std::size_t> g_view_mapped{0};
++std::atomic<std::size_t> g_view_touches{0};
++std::atomic<std::size_t> g_jit_redirects{0};
++std::atomic<std::size_t> g_view_conflicts{0};
++
++std::uint64_t* ViewEntryLocked(std::size_t page, bool create) {
++    const std::size_t span = page / PagesPerSpan;
++    if (span >= (g_view_size >> ViewSpanBits)) {
++        return nullptr;
++    }
++    std::uint64_t*& table = g_view_tables[span];
++    if (table == nullptr) {
++        if (!create) {
++            return nullptr;
++        }
++        table = new (std::nothrow) std::uint64_t[PagesPerSpan]();
++        if (table == nullptr) {
++            return nullptr;
++        }
++    }
++    return &table[page % PagesPerSpan];
++}
++
++int WantedHost(std::uint64_t e) {
++    const unsigned valid = (e >> ValidShift) & 0xF;
++    const unsigned read = (e >> ReadShift) & 0xF;
++    const unsigned write = (e >> WriteShift) & 0xF;
++    if (valid != 0xF || read != 0xF) {
++        return 0;
++    }
++    return write == 0xF ? 2 : 1;
++}
++
++void ReserveViewPage(std::uintptr_t addr) {
++    void* at = reinterpret_cast<void*>(addr);
++    if (sceKernelReserveVirtualRange(&at, ViewPage, MapFixed, ViewPage) != 0) {
++        at = reinterpret_cast<void*>(addr);
++        sceKernelMunmap(at, ViewPage);
++        sceKernelReserveVirtualRange(&at, ViewPage, MapFixed, ViewPage); // best effort
++    }
++}
++
++void DropHostLocked(std::size_t page, std::uint64_t& e) {
++    if (((e >> HostShift) & 3) != 0) {
++        ReserveViewPage(g_view_base + page * ViewPage);
++        e &= ~(std::uint64_t{3} << HostShift);
++        g_view_mapped.fetch_sub(1, std::memory_order_relaxed);
++    }
++}
++
++/// Brings the host mapping of one view page in line with its entry. Mapping itself waits for the
++/// first touch; this only takes access away (or changes it on a page already mapped).
++void ApplyLocked(std::size_t page, std::uint64_t& e) {
++    const int have = static_cast<int>((e >> HostShift) & 3);
++    const int want = WantedHost(e);
++    if (have == want || have == 0) {
++        return;
++    }
++    if (want == 0) {
++        DropHostLocked(page, e);
++        return;
++    }
++    const std::uintptr_t addr = g_view_base + page * ViewPage;
++    if (sceKernelMprotect(reinterpret_cast<void*>(addr), ViewPage,
++                          want == 2 ? ProtReadWrite : ProtRead) != 0) {
++        DropHostLocked(page, e); // the next touch maps it again with the right access
++        return;
++    }
++    e = (e & ~(std::uint64_t{3} << HostShift)) | (std::uint64_t(want) << HostShift);
++}
++
++Region* GuestRegion() {
++    return FindRegion(reinterpret_cast<std::uintptr_t>(g_guest_base.load(std::memory_order_relaxed)));
++}
++
++/// A first touch of a view page that should be mapped: map its backing there. False when the
++/// fault is not ours to fix (unmapped or protected on purpose: dynarmic's).
++bool ViewFault(std::uintptr_t addr) {
++    if (g_view_base == 0 || addr < g_view_base || addr - g_view_base >= g_view_size) {
++        return false;
++    }
++    SpinGuard guard;
++    const std::size_t page = (addr - g_view_base) / ViewPage;
++    std::uint64_t* e = ViewEntryLocked(page, false);
++    if (e == nullptr) {
++        return false;
++    }
++    const int want = WantedHost(*e);
++    if (want == 0 || ((*e >> HostShift) & 3) != 0) {
++        return false;
++    }
++    Region* r = GuestRegion();
++    const std::size_t backing = static_cast<std::size_t>(*e & 0xFFFFFFFFu) * ViewPage;
++    if (r == nullptr || backing >= r->size) {
++        return false;
++    }
++    const std::size_t chunk = backing / Chunk;
++    if (!CommitChunkLocked(*r, chunk)) {
++        return false;
++    }
++    const off_t phys = r->phys[chunk].load(std::memory_order_relaxed) +
++                       static_cast<off_t>(backing % Chunk);
++    void* at = reinterpret_cast<void*>(g_view_base + page * ViewPage);
++    if (sceKernelMapDirectMemory(&at, ViewPage, want == 2 ? ProtReadWrite : ProtRead, MapFixed,
++                                 phys, ViewPage) != 0 ||
++        reinterpret_cast<std::uintptr_t>(at) != g_view_base + page * ViewPage) {
++        return false;
++    }
++    *e = (*e & ~(std::uint64_t{3} << HostShift)) | (std::uint64_t(want) << HostShift);
++    g_view_mapped.fetch_add(1, std::memory_order_relaxed);
++    g_view_touches.fetch_add(1, std::memory_order_relaxed);
++    return true;
++}
++
++/// For each 4 KiB guest page of [view_offset, view_offset + size): fn(entry, subpage, address).
++/// Each entry touched is re-applied afterwards.
++template <typename Fn>
++void ForEachSubPage(std::size_t view_offset, std::size_t size, bool create, Fn&& fn) {
++    if (g_view_base == 0 || size == 0 || view_offset >= g_view_size) {
++        return;
++    }
++    if (size > g_view_size - view_offset) {
++        size = g_view_size - view_offset;
++    }
++    const std::size_t first = view_offset & ~(SubPage - 1);
++    const std::size_t end = view_offset + size;
++    SpinGuard guard;
++    std::size_t page = ~std::size_t{0};
++    std::uint64_t* e = nullptr;
++    for (std::size_t a = first; a < end; a += SubPage) {
++        const std::size_t p = a / ViewPage;
++        if (p != page) {
++            if (e != nullptr) {
++                ApplyLocked(page, *e);
++            }
++            page = p;
++            e = ViewEntryLocked(p, create);
++        }
++        if (e != nullptr) {
++            fn(*e, unsigned((a % ViewPage) / SubPage), a);
++        }
++    }
++    if (e != nullptr) {
++        ApplyLocked(page, *e);
++    }
++}
++
+ void FaultHandler(int signal, void* ucontext) {
+     const auto* mcontext = static_cast<const unsigned char*>(ucontext) + McontextOffset;
+     std::uintptr_t addr;
+@@ -128,6 +298,13 @@ void FaultHandler(int signal, void* ucontext) {
+     if (CommitAddress(addr)) {
+         return; // the access runs again and now finds memory
+     }
++    if (ViewFault(addr)) {
++        return; // first touch of a fastmem page: mapped now
++    }
++    if (const JitFaultHandler jit = g_jit.load(std::memory_order_acquire); jit && jit(ucontext)) {
++        g_jit_redirects.fetch_add(1, std::memory_order_relaxed);
++        return; // dynarmic sent the access down its slow path
++    }
+     if (const FaultChain next = g_next.load(std::memory_order_acquire)) {
+         next(signal, ucontext);
+     }
+@@ -299,6 +476,11 @@ void SetGuestRamBase(void* base, std::size_t size) {
+ }
+ 
+ void OnGuestRamFreed(std::size_t offset, std::size_t size) {
++    if (g_view_base != 0) {
++        // The view may map these chunks a second time; releasing them would leave it pointing at
++        // memory the system hands to someone else. The next owner clears them anyway.
++        return;
++    }
+     unsigned char* const base = g_guest_base.load();
+     if (base != nullptr && offset < g_guest_size.load()) {
+         DecommitLazy(base + offset, size);
+@@ -309,4 +491,199 @@ Stats GetStats() {
+     return {g_reserved.load(), g_committed.load(), g_failures.load(), g_decommitted.load()};
+ }
+ 
++// ---- fastmem -----------------------------------------------------------------------------------
++
++namespace {
++
++// The FakeCall check: a load from an unmapped page whose fault handler pushes a return address and
++// sends rip elsewhere, exactly what dynarmic does to resume a fastmem miss on its slow path.
++extern "C" std::uint64_t EdenPs4FakeCallProbe(const volatile std::uint64_t* p);
++extern "C" const char EdenPs4FakeCallProbeLoad[], EdenPs4FakeCallProbeResume[],
++    EdenPs4FakeCallProbeTarget[];
++asm(R"(
++    .text
++    .p2align 4
++    .globl EdenPs4FakeCallProbe
++EdenPs4FakeCallProbe:
++    xorl %eax, %eax
++    .globl EdenPs4FakeCallProbeLoad
++EdenPs4FakeCallProbeLoad:
++    movq (%rdi), %rax
++    .globl EdenPs4FakeCallProbeResume
++EdenPs4FakeCallProbeResume:
++    ret
++    .globl EdenPs4FakeCallProbeTarget
++EdenPs4FakeCallProbeTarget:
++    movl $0x5eed, %eax
++    ret
++)");
++
++constexpr std::size_t McRip = 160, McRsp = 184;
++
++bool ProbeHandler(void* ucontext) {
++    auto* mc = static_cast<unsigned char*>(ucontext) + McontextOffset;
++    std::uint64_t rip, rsp;
++    std::memcpy(&rip, mc + McRip, sizeof(rip));
++    if (rip != reinterpret_cast<std::uint64_t>(EdenPs4FakeCallProbeLoad)) {
++        return false;
++    }
++    std::memcpy(&rsp, mc + McRsp, sizeof(rsp));
++    rsp -= sizeof(std::uint64_t);
++    const auto resume = reinterpret_cast<std::uint64_t>(EdenPs4FakeCallProbeResume);
++    std::memcpy(reinterpret_cast<void*>(rsp), &resume, sizeof(resume));
++    const auto target = reinterpret_cast<std::uint64_t>(EdenPs4FakeCallProbeTarget);
++    std::memcpy(mc + McRsp, &rsp, sizeof(rsp));
++    std::memcpy(mc + McRip, &target, sizeof(target));
++    return true;
++}
++
++} // Anonymous namespace
++
++bool FastmemSelfTest(char* report, std::size_t report_size) {
++    auto fail = [&](const char* what, int rc) {
++        std::snprintf(report, report_size, "fastmem self-test FAILED at %s (0x%08x): fastmem off",
++                      what, static_cast<unsigned>(rc));
++        g_fastmem_ok.store(false);
++        return false;
++    };
++    // 1. One 64 KiB piece of direct memory mapped at two addresses: a write through one is seen
++    //    through the other, and the second mapping takes mprotect both ways.
++    off_t phys = 0;
++    const off_t total = static_cast<off_t>(sceKernelGetDirectMemorySize());
++    int rc = sceKernelAllocateDirectMemory(0, total, Chunk, Chunk, WbOnion, &phys);
++    if (rc != 0) {
++        return fail("allocate", rc);
++    }
++    void* a = nullptr;
++    void* b = nullptr;
++    rc = sceKernelMapDirectMemory(&a, Chunk, ProtReadWrite, 0, phys, ViewPage);
++    if (rc != 0) {
++        sceKernelReleaseDirectMemory(phys, Chunk);
++        return fail("first mapping", rc);
++    }
++    rc = sceKernelReserveVirtualRange(&b, 2 * Chunk, 0, Chunk);
++    if (rc != 0) {
++        sceKernelMunmap(a, Chunk);
++        sceKernelReleaseDirectMemory(phys, Chunk);
++        return fail("reserve", rc);
++    }
++    // The second mapping is one 16 KiB page from the middle, at a fixed spot in a reservation:
++    // the way the view maps pages.
++    void* page = static_cast<char*>(b) + Chunk;
++    rc = sceKernelMapDirectMemory(&page, ViewPage, ProtReadWrite, MapFixed, phys + 2 * ViewPage,
++                                  ViewPage);
++    bool alias_ok = false;
++    if (rc == 0) {
++        auto* pa = static_cast<volatile std::uint32_t*>(a);
++        auto* pb = static_cast<volatile std::uint32_t*>(page);
++        pa[2 * ViewPage / 4 + 3] = 0xC0FFEE01u;
++        const bool seen_b = pb[3] == 0xC0FFEE01u;
++        pb[5] = 0xC0FFEE02u;
++        const bool seen_a = pa[2 * ViewPage / 4 + 5] == 0xC0FFEE02u;
++        alias_ok = seen_a && seen_b && sceKernelMprotect(page, ViewPage, ProtRead) == 0 &&
++                   pb[3] == 0xC0FFEE01u &&
++                   sceKernelMprotect(page, ViewPage, ProtReadWrite) == 0;
++    }
++    sceKernelMunmap(a, Chunk);
++    // 2. The FakeCall: a load from the unmapped first half of the reservation.
++    std::uint64_t probe = 0;
++    if (rc == 0 && alias_ok) {
++        g_jit.store(ProbeHandler, std::memory_order_release);
++        probe = EdenPs4FakeCallProbe(static_cast<const volatile std::uint64_t*>(b));
++        g_jit.store(nullptr, std::memory_order_release);
++        g_jit_redirects.store(0);
++    }
++    sceKernelMunmap(b, 2 * Chunk);
++    sceKernelReleaseDirectMemory(phys, Chunk);
++    if (rc != 0) {
++        return fail("second mapping", rc);
++    }
++    if (!alias_ok) {
++        return fail("alias or mprotect", 0);
++    }
++    if (probe != 0x5eed) {
++        return fail("fault redirect", static_cast<int>(probe));
++    }
++    std::snprintf(report, report_size,
++                  "fastmem self-test ok: direct memory aliases, mprotect, fault redirect (rip/rsp)");
++    g_fastmem_ok.store(true);
++    return true;
++}
++
++bool FastmemAvailable() {
++    return g_fastmem_ok.load();
++}
++
++void* ReserveView(std::size_t size) {
++    if (!g_fastmem_ok.load() || g_view_base != 0) {
++        return nullptr;
++    }
++    constexpr std::size_t Span = std::size_t{1} << ViewSpanBits;
++    size = (size + Span - 1) & ~(Span - 1);
++    void* base = nullptr;
++    if (sceKernelReserveVirtualRange(&base, size, 0, std::size_t{1} << 21) != 0 || base == nullptr) {
++        return nullptr;
++    }
++    auto** tables = new (std::nothrow) std::uint64_t*[size >> ViewSpanBits]();
++    if (tables == nullptr) {
++        sceKernelMunmap(base, size);
++        return nullptr;
++    }
++    SpinGuard guard;
++    g_view_tables = tables;
++    g_view_size = size;
++    g_view_base = reinterpret_cast<std::uintptr_t>(base);
++    return base;
++}
++
++void ViewMap(std::size_t view_offset, std::size_t backing_offset, std::size_t size, bool read,
++             bool write) {
++    const bool congruent = (view_offset % ViewPage) == (backing_offset % ViewPage);
++    ForEachSubPage(view_offset, size, true, [&](std::uint64_t& e, unsigned sub, std::size_t a) {
++        const std::uint64_t bit = std::uint64_t{1} << sub;
++        if (!congruent) {
++            e &= ~(bit << ValidShift);
++            g_view_conflicts.fetch_add(1, std::memory_order_relaxed);
++            return;
++        }
++        const std::uint64_t backing_page = (backing_offset + (a - view_offset)) / ViewPage;
++        const unsigned valid = (e >> ValidShift) & 0xF;
++        if (valid != 0 && (e & 0xFFFFFFFFu) != backing_page) {
++            // Another backing page was here: the other pieces of it can no longer be reached
++            // through this page (they stay correct through the page table).
++            e &= ~(std::uint64_t{0xF} << ValidShift);
++            DropHostLocked(a / ViewPage, e);
++            g_view_conflicts.fetch_add(1, std::memory_order_relaxed);
++        }
++        e = (e & ~std::uint64_t{0xFFFFFFFFu}) | backing_page;
++        e |= bit << ValidShift;
++        e = read ? e | (bit << ReadShift) : e & ~(bit << ReadShift);
++        e = write ? e | (bit << WriteShift) : e & ~(bit << WriteShift);
++    });
++}
++
++void ViewUnmap(std::size_t view_offset, std::size_t size) {
++    ForEachSubPage(view_offset, size, false, [&](std::uint64_t& e, unsigned sub, std::size_t) {
++        e &= ~((std::uint64_t{1} << sub) << ValidShift);
++    });
++}
++
++void ViewProtect(std::size_t view_offset, std::size_t size, bool read, bool write) {
++    ForEachSubPage(view_offset, size, false, [&](std::uint64_t& e, unsigned sub, std::size_t) {
++        const std::uint64_t bit = std::uint64_t{1} << sub;
++        e = read ? e | (bit << ReadShift) : e & ~(bit << ReadShift);
++        e = write ? e | (bit << WriteShift) : e & ~(bit << WriteShift);
++    });
++}
++
++void SetJitFaultHandler(JitFaultHandler handler) {
++    g_jit.store(handler, std::memory_order_release);
++}
++
++ViewStats GetViewStats() {
++    return {g_view_mapped.load(), g_view_touches.load(), g_jit_redirects.load(),
++            g_view_conflicts.load()};
++}
++
++
+ } // namespace Common::Orbis
+diff --git a/src/common/orbis_lazy_memory.h b/src/common/orbis_lazy_memory.h
+index 6e52b44..5e958d1 100644
+--- a/src/common/orbis_lazy_memory.h
++++ b/src/common/orbis_lazy_memory.h
+@@ -56,4 +56,40 @@ struct Stats {
+ };
+ Stats GetStats();
+ 
++// ---- fastmem (test 25) --------------------------------------------------------------------------
++// The guest address space as one host range (HostMemory's virtual_base), so the JIT reaches guest
++// memory with one instruction instead of a page-table walk. Every 16 KiB host page of it aliases a
++// 16 KiB piece of the guest RAM backing (the same direct memory mapped twice), mapped on its first
++// touch. A page is mapped only when its four 4 KiB guest pages map consecutive backing with read
++// access; anything else stays unmapped and the JIT's access faults into dynarmic, which moves that
++// instruction to the page-table path. Correctness never depends on the view: the page table is
++// always authoritative.
++
++/// Runs the startup checks fastmem needs (direct memory mapped twice; a fault handler that moves
++/// rip/rsp, the way dynarmic resumes a faulting access). Writes a one-line report.
++bool FastmemSelfTest(char* report, std::size_t report_size);
++/// Self-test passed and fastmem was not switched off.
++bool FastmemAvailable();
++/// Reserves the view (HostMemory). Returns nullptr when fastmem is unavailable or it fails.
++void* ReserveView(std::size_t size);
++/// HostMemory::Map / Unmap / Protect on the view. Offsets are guest virtual addresses and offsets
++/// into the guest RAM backing.
++void ViewMap(std::size_t view_offset, std::size_t backing_offset, std::size_t size, bool read,
++             bool write);
++void ViewUnmap(std::size_t view_offset, std::size_t size);
++void ViewProtect(std::size_t view_offset, std::size_t size, bool read, bool write);
++
++/// dynarmic's handler for faults inside JIT code (fastmem misses): returns true when it redirected
++/// the thread (ucontext modified). Called after lazy commits and view first-touches.
++using JitFaultHandler = bool (*)(void* ucontext);
++void SetJitFaultHandler(JitFaultHandler handler);
++
++struct ViewStats {
++    std::size_t mapped_pages;   // 16 KiB view pages currently mapped
++    std::size_t first_touches;  // view faults that mapped a page
++    std::size_t jit_redirects;  // faults handed to dynarmic (instruction moved to the slow path)
++    std::size_t conflicts;      // view pages that could not alias (misaligned or mixed backing)
++};
++ViewStats GetViewStats();
++
+ } // namespace Common::Orbis
+diff --git a/src/dynarmic/src/dynarmic/CMakeLists.txt b/src/dynarmic/src/dynarmic/CMakeLists.txt
+index 8ba15ea..6607e6e 100644
+--- a/src/dynarmic/src/dynarmic/CMakeLists.txt
++++ b/src/dynarmic/src/dynarmic/CMakeLists.txt
+@@ -363,6 +363,9 @@ elseif (APPLE)
+             backend/exception_handler_macos_mig.c
+         )
+     endif()
++elseif (PS4)
++    # eden-ps4: faults come through the kernel exception handler of common/orbis_lazy_memory
++    target_sources(dynarmic PRIVATE backend/exception_handler_orbis.cpp)
+ elseif (UNIX AND NOT HAIKUOS AND NOT PS4)
+     # (PS4: faults never reach sigaction there, and the ucontext layout differs; generic below)
+     # Haiku lacks <ucontext.h>
+diff --git a/src/dynarmic/src/dynarmic/backend/exception_handler_orbis.cpp b/src/dynarmic/src/dynarmic/backend/exception_handler_orbis.cpp
+new file mode 100644
+index 0000000..9709672
+--- /dev/null
++++ b/src/dynarmic/src/dynarmic/backend/exception_handler_orbis.cpp
+@@ -0,0 +1,112 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++// eden-ps4: fastmem fault handling on the PS4 (OpenOrbis).
++//
++// Faults there never reach sigaction; they come through the kernel exception handler that
++// common/orbis_lazy_memory installs, which commits lazy memory and maps first touches of the
++// fastmem view itself and hands the rest here. A fault inside a JIT code buffer at a fastmem patch
++// location is resumed the way the POSIX handler does it: push the resume address and call the
++// slow-path thunk (the startup self-test checked that this kernel honours a modified rip/rsp).
++
++#include <array>
++#include <atomic>
++#include <bit>
++#include <cstring>
++#include <functional>
++#include <mutex>
++
++#include "common/orbis_lazy_memory.h"
++#include "dynarmic/backend/exception_handler.h"
++#include "dynarmic/backend/x64/block_of_code.h"
++
++namespace Dynarmic::Backend {
++
++namespace {
++
++// PS4 ucontext: 16-byte signal mask + 48 bytes of padding, then a FreeBSD amd64 mcontext.
++constexpr std::size_t McontextOffset = 64;
++constexpr std::size_t McRip = 160, McRsp = 184;
++
++struct CodeBlock {
++    std::atomic<u64> start{0};
++    std::atomic<u64> size{0};
++    std::function<FakeCall(u64)> cb;
++    std::atomic<bool> has_cb{false};
++};
++
++// One per JIT (each emulated core has its own); never more than a handful.
++constexpr std::size_t MaxBlocks = 32;
++std::array<CodeBlock, MaxBlocks> g_blocks;
++std::mutex g_register_mutex;
++
++bool OnFault(void* ucontext) {
++    auto* mc = static_cast<unsigned char*>(ucontext) + McontextOffset;
++    u64 rip;
++    std::memcpy(&rip, mc + McRip, sizeof(rip));
++    for (CodeBlock& block : g_blocks) {
++        const u64 start = block.start.load(std::memory_order_acquire);
++        const u64 size = block.size.load(std::memory_order_acquire);
++        if (size == 0 || rip < start || rip - start >= size) {
++            continue;
++        }
++        if (!block.has_cb.load(std::memory_order_acquire)) {
++            return false;
++        }
++        const FakeCall fc = block.cb(rip);
++        u64 rsp;
++        std::memcpy(&rsp, mc + McRsp, sizeof(rsp));
++        rsp -= sizeof(u64);
++        std::memcpy(std::bit_cast<void*>(rsp), &fc.ret_rip, sizeof(u64));
++        std::memcpy(mc + McRsp, &rsp, sizeof(rsp));
++        std::memcpy(mc + McRip, &fc.call_rip, sizeof(u64));
++        return true;
++    }
++    return false;
++}
++
++} // Anonymous namespace
++
++struct ExceptionHandler::Impl final {
++    explicit Impl(CodeBlock* block_) : block{block_} {}
++    ~Impl() {
++        std::scoped_lock lock{g_register_mutex};
++        block->has_cb.store(false, std::memory_order_release);
++        block->size.store(0, std::memory_order_release);
++        block->start.store(0, std::memory_order_release);
++    }
++    CodeBlock* block;
++};
++
++ExceptionHandler::ExceptionHandler() = default;
++ExceptionHandler::~ExceptionHandler() = default;
++
++void ExceptionHandler::Register(X64::BlockOfCode& code) {
++    if (!::Common::Orbis::FastmemAvailable()) {
++        return;
++    }
++    std::scoped_lock lock{g_register_mutex};
++    for (CodeBlock& block : g_blocks) {
++        if (block.size.load(std::memory_order_relaxed) == 0) {
++            block.has_cb.store(false, std::memory_order_relaxed);
++            block.start.store(std::bit_cast<u64>(code.getCode()), std::memory_order_release);
++            block.size.store(code.GetTotalCodeSize(), std::memory_order_release);
++            impl = std::make_unique<Impl>(&block);
++            ::Common::Orbis::SetJitFaultHandler(&OnFault);
++            return;
++        }
++    }
++}
++
++bool ExceptionHandler::SupportsFastmem() const noexcept {
++    return bool(impl) && ::Common::Orbis::FastmemAvailable();
++}
++
++void ExceptionHandler::SetFastmemCallback(std::function<FakeCall(u64)> cb) {
++    if (!impl) {
++        return;
++    }
++    std::scoped_lock lock{g_register_mutex};
++    impl->block->cb = std::move(cb);
++    impl->block->has_cb.store(true, std::memory_order_release);
++}
++
++} // namespace Dynarmic::Backend
+-- 
+2.56.0.windows.1
+

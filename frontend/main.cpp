@@ -22,6 +22,8 @@
 // L2/R2=ZL/ZR, Options=+, touch pad click=-, L3/R3 sticks. Options + touch pad for 2 s quits.
 
 #include <algorithm>
+#include <cstring>
+#include <unistd.h>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -198,7 +200,13 @@ void ApplyPs4Settings() {
     auto& v = Settings::values;
     v.renderer_backend.SetValue(Settings::RendererBackend::Vulkan);
     v.use_multi_core.SetValue(true);
-    v.cpu_accuracy.SetValue(Settings::CpuAccuracy::Auto);
+    // Speed (test 24): in races 70-87% of the emulated cores' busy time is the JIT's own code.
+    // Unsafe adds dynarmic's inaccurate-NaN and reduced-error FP on top of Auto's unfused FMA
+    // (the Jaguar has no FMA); what most phones run MK8D with. settings.txt: cpu_accuracy=auto.
+    v.cpu_accuracy.SetValue(Settings::CpuAccuracy::Unsafe);
+    // Fastmem (test 25): the JIT reaches guest memory with one instruction instead of a page-table
+    // walk. Needs the startup self-test (FastmemSelfTest); settings.txt: fastmem=off.
+    v.cpuopt_unsafe_host_mmu.SetValue(true);
     // Handheld renders at 720p: less GPU work for a GPU that is much smaller than the PS5's.
     v.use_docked_mode.SetValue(Settings::ConsoleMode::Handheld);
     v.resolution_setup.SetValue(Settings::ResolutionSetup::Res1X);
@@ -234,7 +242,11 @@ void ApplyPs4Settings() {
     setenv("RADV_DEBUG", "info", 1);
     // The driver's GPU arena: 1024 MiB by default ran out loading an MK8D race (test 20); there
     // was direct memory to spare. The texture and buffer caches size their budgets from this.
-    setenv("ORBIS_ARENA_MIB", "1280", 1);
+    // Test 28: 1152. The driver puts most images on GARLIC memory allocated OUTSIDE the arena (the
+    // direct memory map showed it: ~650 MiB of extra allocations by the race), so the arena mostly
+    // gives address space; at 1280 a race load ran direct memory out (test 27, with fastmem's
+    // bookkeeping on top). The texture cache budgets, and with them the GARLIC images, follow it.
+    setenv("ORBIS_ARENA_MIB", "1152", 1);
 }
 
 /// settings.txt: lines "key=value" ('#' starts a comment). Each recognized line is logged; any
@@ -249,8 +261,71 @@ void ApplyPs4Settings() {
 ///   gpu_accuracy=low|high       (default low)
 ///   reactive_flushing=on|off    (default off)
 ///   profile=on|off              sampling profiler in boot.log (default on)
+///   cpu_accuracy=unsafe|auto|accurate (default unsafe)
+///   fastmem=on|off              (default on; needs cpu_accuracy=unsafe)
 ///   async_shaders=on|off        (default on)
 ///   env=NAME=VALUE              environment for the PS4 driver (e.g. env=RADV_DEBUG=info,nohiz)
+// The environment, moved out of the heap once every setenv is done (test 29). Test 28 crashed in
+// getenv inside the GPU driver (it reads the environment on every buffer it creates): the heap
+// array musl keeps the variables in held log text ("...er.Vulka...") instead of pointers, i.e.
+// something overwrote that small heap block. A static copy cannot be hit that way; the old heap
+// array is kept and compared at every status line, to catch whoever writes over it.
+char* g_env_static[64];
+char g_env_text[8192];
+char** g_env_heap = nullptr;
+char* g_env_heap_saved[64];
+int g_env_count = 0;
+bool g_env_reported = false;
+
+void MoveEnvironmentOutOfHeap() {
+    char** env = environ;
+    std::size_t used = 0;
+    int n = 0;
+    for (; env != nullptr && env[n] != nullptr && n < 63; ++n) {
+        const std::size_t len = std::strlen(env[n]) + 1;
+        if (used + len > sizeof(g_env_text)) {
+            break;
+        }
+        std::memcpy(g_env_text + used, env[n], len);
+        g_env_static[n] = g_env_text + used;
+        g_env_heap_saved[n] = env[n];
+        used += len;
+    }
+    g_env_static[n] = nullptr;
+    g_env_heap_saved[n] = nullptr;
+    g_env_heap = env;
+    g_env_count = n;
+    environ = g_env_static;
+    Ps4::Log("environment: %d variables moved out of the heap (%lu bytes)", n,
+             static_cast<unsigned long>(used));
+}
+
+void CheckHeapEnvironment() {
+    if (g_env_heap == nullptr || g_env_reported) {
+        return;
+    }
+    for (int i = 0; i <= g_env_count; ++i) {
+        if (g_env_heap[i] == g_env_heap_saved[i]) {
+            continue;
+        }
+        g_env_reported = true;
+        unsigned char bytes[96];
+        std::memcpy(bytes, g_env_heap, sizeof(bytes));
+        char line[400];
+        int len = 0;
+        for (std::size_t b = 0; b < sizeof(bytes); ++b) {
+            const unsigned char c = bytes[b];
+            line[len++] = c >= 0x20 && c < 0x7f ? static_cast<char>(c) : '.';
+        }
+        line[len] = 0;
+        Ps4::Log("!! HEAP CORRUPTION: the old environment array at %p was overwritten (slot %d: "
+                 "%p, was %p). Its first 96 bytes as text: %s",
+                 static_cast<void*>(g_env_heap), i, static_cast<void*>(g_env_heap[i]),
+                 static_cast<void*>(g_env_heap_saved[i]), line);
+        return;
+    }
+}
+
 void ApplySettingsFile() {
     std::ifstream in{fs::path{Ps4::DataDir} / "settings.txt"};
     if (!in) {
@@ -276,6 +351,13 @@ void ApplySettingsFile() {
                                                         : Settings::AstcDecodeMode::CpuAsynchronous);
         } else if (key == "bgra" && (value == "auto" || value == "on" || value == "off")) {
             Vulkan::ps4_bgra_mode = value == "auto" ? 0 : value == "on" ? 1 : 2;
+        } else if (key == "cpu_accuracy" &&
+                   (value == "unsafe" || value == "auto" || value == "accurate")) {
+            v.cpu_accuracy.SetValue(value == "unsafe" ? Settings::CpuAccuracy::Unsafe
+                                    : value == "auto" ? Settings::CpuAccuracy::Auto
+                                                      : Settings::CpuAccuracy::Accurate);
+        } else if (key == "fastmem" && (value == "on" || value == "off")) {
+            v.cpuopt_unsafe_host_mmu.SetValue(value == "on");
         } else if (key == "profile" && (value == "on" || value == "off")) {
             Ps4::SetProfiling(value == "on");
         } else if (key == "reactive_flushing" && (value == "on" || value == "off")) {
@@ -405,7 +487,7 @@ void CheckMutexes() {
 int main() {
     Ps4::OpenBootLog();
     Ps4::Log("eden-ps4 starting (Eden %s %s)", Common::g_scm_branch, Common::g_scm_desc);
-    Ps4::Log("PS4 build: %s; test 22: speed - btver2 build, gpu_accuracy low, no reactive flushing, texture audit off, profiler; defaults CPU ASTC, swizzle test off",
+    Ps4::Log("PS4 build: %s; test 29: environment moved out of the heap + heap corruption detector (test 28 crashed in getenv), GPU arena 1152 MiB, fastmem redirects by cause, fastmem view <= 64 GiB, direct memory map, unsafe CPU, lazy memory at the top; defaults CPU ASTC, swizzle test off",
              EDEN_PS4_BUILD_ID);
     Ps4::InstallCrashReporting();
     Ps4::StartWatchdog();
@@ -461,6 +543,17 @@ int main() {
     Ps4::SetPhase("core init");
     ApplyPs4Settings();
     ApplySettingsFile();
+    MoveEnvironmentOutOfHeap();
+    if (Settings::IsFastmemEnabled()) {
+        char report[200];
+        Ps4::Log("fastmem self-test: starting (if this is the last line, put fastmem=off in settings.txt)");
+        if (!Common::Orbis::FastmemSelfTest(report, sizeof(report))) {
+            Settings::values.cpuopt_unsafe_host_mmu.SetValue(false);
+        }
+        Ps4::Log("%s", report);
+    } else {
+        Ps4::Log("fastmem: off (settings)");
+    }
     Core::System system;
     system.Initialize();
     InputCommon::InputSubsystem input;
@@ -551,12 +644,39 @@ int main() {
             last_status = Ps4::NowUs();
             const auto perf = system.GetAndResetPerfStats();
             const auto mem = Common::Orbis::GetStats();
-            Ps4::Log("status: game %.1f fps, speed %.0f%%, frame %.1f ms, guest+tables %lu MiB committed (%lu MiB given back), %lu MiB direct free",
+            Ps4::Log("status: game %.1f fps, speed %.0f%%, frame %.1f ms, guest+tables %lu MiB committed (%lu MiB given back), largest free direct block %lu MiB",
                      perf.average_game_fps, perf.emulation_speed * 100.0, perf.frametime * 1000.0,
                      static_cast<unsigned long>(mem.committed_bytes >> 20),
                      static_cast<unsigned long>(mem.decommitted_bytes >> 20),
                      static_cast<unsigned long>(Ps4::FreeDirectMemory() >> 20));
+            if (Common::Orbis::FastmemAvailable()) {
+                const auto view = Common::Orbis::GetViewStats();
+                Ps4::Log("fastmem: view %lu GiB (asked %lu GiB, last refusal 0x%08x), %lu pages "
+                         "mapped (%lu MiB), %lu first touches, %lu slow-path redirects, %lu unaliasable",
+                         static_cast<unsigned long>(view.view_bytes >> 30),
+                         static_cast<unsigned long>(view.asked_bytes >> 30),
+                         static_cast<unsigned>(view.reserve_error),
+                         static_cast<unsigned long>(view.mapped_pages),
+                         static_cast<unsigned long>(view.mapped_pages / 64),
+                         static_cast<unsigned long>(view.first_touches),
+                         static_cast<unsigned long>(view.jit_redirects),
+                         static_cast<unsigned long>(view.conflicts));
+                Ps4::Log("   redirects by cause: outside %lu (0x%lx), unmapped %lu (0x%lx), unreadable %lu "
+                         "(0x%lx), write to read-only %lu (0x%lx), other %lu (0x%lx)",
+                         static_cast<unsigned long>(view.redirect_reason[0]),
+                         static_cast<unsigned long>(view.redirect_sample[0]),
+                         static_cast<unsigned long>(view.redirect_reason[1]),
+                         static_cast<unsigned long>(view.redirect_sample[1]),
+                         static_cast<unsigned long>(view.redirect_reason[2]),
+                         static_cast<unsigned long>(view.redirect_sample[2]),
+                         static_cast<unsigned long>(view.redirect_reason[3]),
+                         static_cast<unsigned long>(view.redirect_sample[3]),
+                         static_cast<unsigned long>(view.redirect_reason[4]),
+                         static_cast<unsigned long>(view.redirect_sample[4]));
+            }
+            CheckHeapEnvironment();
             if (++status_count % 3 == 1) {
+                Ps4::LogDirectMemoryMap();
                 Ps4HeapCensus();
             }
         }

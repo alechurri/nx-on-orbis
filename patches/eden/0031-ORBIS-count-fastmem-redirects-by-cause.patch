@@ -1,0 +1,85 @@
+From 5df55612acd3a357cb8445605f3d577563d5e4a8 Mon Sep 17 00:00:00 2001
+From: alechurri <337117637+alechurri@users.noreply.github.com>
+Date: Wed, 7 Oct 2026 00:19:00 -0300
+Subject: [PATCH 31/31] ORBIS: count fastmem redirects by cause
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/common/orbis_lazy_memory.cpp | 31 +++++++++++++++++++++++++++++--
+ src/common/orbis_lazy_memory.h   |  4 ++++
+ 2 files changed, 33 insertions(+), 2 deletions(-)
+
+diff --git a/src/common/orbis_lazy_memory.cpp b/src/common/orbis_lazy_memory.cpp
+index 394cda2..3d6f214 100644
+--- a/src/common/orbis_lazy_memory.cpp
++++ b/src/common/orbis_lazy_memory.cpp
+@@ -148,6 +148,10 @@ std::atomic<std::size_t> g_view_mapped{0};
+ std::atomic<std::size_t> g_view_touches{0};
+ std::atomic<std::size_t> g_jit_redirects{0};
+ std::atomic<std::size_t> g_view_conflicts{0};
++// Why faults went to dynarmic: 0 outside the view, 1 a 4 KiB guest page of the 16 KiB page is not
++// mapped (or maps other backing), 2 not readable, 3 write to a page mapped read-only, 4 other.
++std::atomic<std::size_t> g_redirect_reason[5]{};
++std::atomic<std::uintptr_t> g_redirect_sample[5]{};
+ 
+ std::uint64_t* ViewEntryLocked(std::size_t page, bool create) {
+     const std::size_t span = page / PagesPerSpan;
+@@ -303,6 +307,24 @@ void FaultHandler(int signal, void* ucontext) {
+     }
+     if (const JitFaultHandler jit = g_jit.load(std::memory_order_acquire); jit && jit(ucontext)) {
+         g_jit_redirects.fetch_add(1, std::memory_order_relaxed);
++        int reason = 0;
++        std::uintptr_t sample = addr;
++        if (g_view_base != 0 && addr >= g_view_base && addr - g_view_base < g_view_size) {
++            sample = addr - g_view_base;
++            SpinGuard guard;
++            const std::uint64_t* e = ViewEntryLocked((addr - g_view_base) / ViewPage, false);
++            if (e == nullptr || ((*e >> ValidShift) & 0xF) != 0xF) {
++                reason = 1;
++            } else if (((*e >> ReadShift) & 0xF) != 0xF) {
++                reason = 2;
++            } else if (((*e >> HostShift) & 3) == 1) {
++                reason = 3;
++            } else {
++                reason = 4;
++            }
++        }
++        g_redirect_reason[reason].fetch_add(1, std::memory_order_relaxed);
++        g_redirect_sample[reason].store(sample, std::memory_order_relaxed);
+         return; // dynarmic sent the access down its slow path
+     }
+     if (const FaultChain next = g_next.load(std::memory_order_acquire)) {
+@@ -722,8 +744,13 @@ unsigned ViewAddressBits() {
+ }
+ 
+ ViewStats GetViewStats() {
+-    return {g_view_mapped.load(), g_view_touches.load(), g_jit_redirects.load(),
+-            g_view_conflicts.load(), g_view_size, g_view_asked, g_view_error};
++    ViewStats stats{g_view_mapped.load(), g_view_touches.load(), g_jit_redirects.load(),
++                    g_view_conflicts.load(), g_view_size, g_view_asked, g_view_error, {}, {}};
++    for (int i = 0; i < 5; ++i) {
++        stats.redirect_reason[i] = g_redirect_reason[i].load();
++        stats.redirect_sample[i] = g_redirect_sample[i].load();
++    }
++    return stats;
+ }
+ 
+ 
+diff --git a/src/common/orbis_lazy_memory.h b/src/common/orbis_lazy_memory.h
+index 6e94abb..d4a7ed8 100644
+--- a/src/common/orbis_lazy_memory.h
++++ b/src/common/orbis_lazy_memory.h
+@@ -96,6 +96,10 @@ struct ViewStats {
+     std::size_t view_bytes;     // size of the view (0: none)
+     std::size_t asked_bytes;    // what HostMemory asked for
+     int reserve_error;          // last error reserving it
++    // Redirects by cause: outside the view, guest page unmapped/unaliasable, not readable, write
++    // to a read-only page, other; and the last guest address (view offset) seen for each.
++    std::size_t redirect_reason[5];
++    std::uintptr_t redirect_sample[5];
+ };
+ ViewStats GetViewStats();
+ 
+-- 
+2.56.0.windows.1
+

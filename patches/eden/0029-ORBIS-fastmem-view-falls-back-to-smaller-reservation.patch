@@ -1,0 +1,162 @@
+From 9063528b0555ca6ac7715e78a27632251450eb33 Mon Sep 17 00:00:00 2001
+From: alechurri <337117637+alechurri@users.noreply.github.com>
+Date: Tue, 6 Oct 2026 23:40:46 -0300
+Subject: [PATCH 29/31] ORBIS: fastmem view falls back to smaller reservations
+
+512 GiB was refused on the console; halve down to 4 GiB (all a 32-bit guest needs) and bound
+the A64 JIT's fastmem checks to the view.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/common/host_memory.cpp                |  8 +++++-
+ src/common/orbis_lazy_memory.cpp          | 34 +++++++++++++++++++++--
+ src/common/orbis_lazy_memory.h            | 11 ++++++--
+ src/core/arm/dynarmic/arm_dynarmic_64.cpp | 15 ++++++++++
+ 4 files changed, 62 insertions(+), 6 deletions(-)
+
+diff --git a/src/common/host_memory.cpp b/src/common/host_memory.cpp
+index ebbd946..edfe10a 100644
+--- a/src/common/host_memory.cpp
++++ b/src/common/host_memory.cpp
+@@ -718,7 +718,13 @@ HostMemory::HostMemory(size_t backing_size_, size_t virtual_size_)
+     Common::Orbis::SetGuestRamBase(backing_base, backing_size);
+     // Fastmem (test 25): a view of the guest address space whose pages alias the backing; only
+     // when the startup self-test passed (Common::Orbis::FastmemSelfTest), otherwise nullptr.
+-    virtual_base = static_cast<u8*>(Common::Orbis::ReserveView(virtual_size));
++    {
++        std::size_t view_size = virtual_size;
++        virtual_base = static_cast<u8*>(Common::Orbis::ReserveView(view_size));
++        if (virtual_base) {
++            virtual_size = view_size;
++        }
++    }
+     if (virtual_base) {
+         LOG_INFO(HW_Memory, "PS4 fastmem view: {} GiB at {}", virtual_size >> 30,
+                  fmt::ptr(virtual_base));
+diff --git a/src/common/orbis_lazy_memory.cpp b/src/common/orbis_lazy_memory.cpp
+index 6627098..27c3437 100644
+--- a/src/common/orbis_lazy_memory.cpp
++++ b/src/common/orbis_lazy_memory.cpp
+@@ -614,16 +614,36 @@ bool FastmemAvailable() {
+     return g_fastmem_ok.load();
+ }
+ 
+-void* ReserveView(std::size_t size) {
++std::size_t g_view_asked = 0;
++int g_view_error = 0;
++
++void* ReserveView(std::size_t& size) {
+     if (!g_fastmem_ok.load() || g_view_base != 0) {
+         return nullptr;
+     }
+     constexpr std::size_t Span = std::size_t{1} << ViewSpanBits;
++    g_view_asked = size;
+     size = (size + Span - 1) & ~(Span - 1);
++    // Test 25: 512 GiB (a 39-bit guest) was refused. Halve until it fits; 4 GiB covers 32-bit
++    // guests (MK8D) completely, and 64-bit ones get bounds-checked to what there is.
++    std::size_t try_size = std::size_t{1} << 39;
++    while (try_size > size) {
++        try_size >>= 1;
++    }
+     void* base = nullptr;
+-    if (sceKernelReserveVirtualRange(&base, size, 0, std::size_t{1} << 21) != 0 || base == nullptr) {
++    for (; try_size >= (std::size_t{1} << 32); try_size >>= 1) {
++        base = nullptr;
++        const int rc = sceKernelReserveVirtualRange(&base, try_size, 0, std::size_t{1} << 21);
++        if (rc == 0 && base != nullptr) {
++            break;
++        }
++        g_view_error = rc;
++        base = nullptr;
++    }
++    if (base == nullptr) {
+         return nullptr;
+     }
++    size = try_size;
+     auto** tables = new (std::nothrow) std::uint64_t*[size >> ViewSpanBits]();
+     if (tables == nullptr) {
+         sceKernelMunmap(base, size);
+@@ -680,9 +700,17 @@ void SetJitFaultHandler(JitFaultHandler handler) {
+     g_jit.store(handler, std::memory_order_release);
+ }
+ 
++unsigned ViewAddressBits() {
++    unsigned bits = 0;
++    while (bits < 63 && (std::size_t{1} << (bits + 1)) <= g_view_size) {
++        ++bits;
++    }
++    return g_view_size == 0 ? 0 : bits;
++}
++
+ ViewStats GetViewStats() {
+     return {g_view_mapped.load(), g_view_touches.load(), g_jit_redirects.load(),
+-            g_view_conflicts.load()};
++            g_view_conflicts.load(), g_view_size, g_view_asked, g_view_error};
+ }
+ 
+ 
+diff --git a/src/common/orbis_lazy_memory.h b/src/common/orbis_lazy_memory.h
+index 5e958d1..6e94abb 100644
+--- a/src/common/orbis_lazy_memory.h
++++ b/src/common/orbis_lazy_memory.h
+@@ -70,8 +70,12 @@ Stats GetStats();
+ bool FastmemSelfTest(char* report, std::size_t report_size);
+ /// Self-test passed and fastmem was not switched off.
+ bool FastmemAvailable();
+-/// Reserves the view (HostMemory). Returns nullptr when fastmem is unavailable or it fails.
+-void* ReserveView(std::size_t size);
++/// Reserves the view (HostMemory): `size` if the console gives that much address space, else the
++/// largest power of two down to 4 GiB (enough for a 32-bit guest); `size` is updated. Returns
++/// nullptr when fastmem is unavailable or nothing could be reserved.
++void* ReserveView(std::size_t& size);
++/// log2 of the view's size (0 without a view): the JIT bounds-checks addresses beyond it.
++unsigned ViewAddressBits();
+ /// HostMemory::Map / Unmap / Protect on the view. Offsets are guest virtual addresses and offsets
+ /// into the guest RAM backing.
+ void ViewMap(std::size_t view_offset, std::size_t backing_offset, std::size_t size, bool read,
+@@ -89,6 +93,9 @@ struct ViewStats {
+     std::size_t first_touches;  // view faults that mapped a page
+     std::size_t jit_redirects;  // faults handed to dynarmic (instruction moved to the slow path)
+     std::size_t conflicts;      // view pages that could not alias (misaligned or mixed backing)
++    std::size_t view_bytes;     // size of the view (0: none)
++    std::size_t asked_bytes;    // what HostMemory asked for
++    int reserve_error;          // last error reserving it
+ };
+ ViewStats GetViewStats();
+ 
+diff --git a/src/core/arm/dynarmic/arm_dynarmic_64.cpp b/src/core/arm/dynarmic/arm_dynarmic_64.cpp
+index 6aaf699..a00d131 100644
+--- a/src/core/arm/dynarmic/arm_dynarmic_64.cpp
++++ b/src/core/arm/dynarmic/arm_dynarmic_64.cpp
+@@ -5,6 +5,9 @@
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+ #include "common/settings.h"
++#ifdef __ORBIS__
++#include "common/orbis_lazy_memory.h"
++#endif
+ #include "core/arm/dynarmic/arm_dynarmic.h"
+ #include "core/arm/dynarmic/arm_dynarmic_64.h"
+ #include "core/arm/dynarmic/dynarmic_exclusive_monitor.h"
+@@ -367,6 +370,18 @@ void ArmDynarmic64::MakeJit(Common::PageTable* page_table, std::size_t address_s
+         config.fastmem_pointer = std::nullopt;
+         config.fastmem_exclusive_access = false;
+     }
++#ifdef __ORBIS__
++    // The PS4 fastmem view may be smaller than the guest's address space: check against it.
++    if (config.fastmem_pointer) {
++        const unsigned view_bits = Common::Orbis::ViewAddressBits();
++        if (view_bits == 0) {
++            config.fastmem_pointer = std::nullopt;
++            config.fastmem_exclusive_access = false;
++        } else if (config.fastmem_address_space_bits > view_bits) {
++            config.fastmem_address_space_bits = view_bits;
++        }
++    }
++#endif
+     m_jit.emplace(config);
+ }
+ 
+-- 
+2.56.0.windows.1
+

@@ -1,7 +1,7 @@
 From c56e508a0a863148e552e5af4694f8c96d949ac6 Mon Sep 17 00:00:00 2001
 From: alechurri <337117637+alechurri@users.noreply.github.com>
 Date: Tue, 6 Oct 2026 12:33:37 -0300
-Subject: [PATCH 21/27] PS4: name the thread in the texture-cache image history
+Subject: [PATCH 21/31] PS4: name the thread in the texture-cache image history
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---

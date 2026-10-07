@@ -1,7 +1,7 @@
 From 79b11c7a2a63ebed65d207bf51b381ed61d2af35 Mon Sep 17 00:00:00 2001
 From: alechurri <337117637+alechurri@users.noreply.github.com>
 Date: Sun, 4 Oct 2026 10:11:34 -0300
-Subject: [PATCH 12/27] PS4: log new pipelines' stages and each distinct
+Subject: [PATCH 12/31] PS4: log new pipelines' stages and each distinct
  sampled view setup
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

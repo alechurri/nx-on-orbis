@@ -1,7 +1,7 @@
 From f1acd2b104f932213f8cbe55243361eaa16c242d Mon Sep 17 00:00:00 2001
 From: alechurri <337117637+alechurri@users.noreply.github.com>
 Date: Sun, 4 Oct 2026 02:20:12 -0300
-Subject: [PATCH 10/27] PS4: B8G8R8A8 sampling self-test and red/blue
+Subject: [PATCH 10/31] PS4: B8G8R8A8 sampling self-test and red/blue
  workaround, guard double image unregistration
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

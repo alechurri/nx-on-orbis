@@ -1,7 +1,7 @@
 From 8a3dfd53522ef795f53b52a42b4364da7b6ed663 Mon Sep 17 00:00:00 2001
 From: alechurri <337117637+alechurri@users.noreply.github.com>
 Date: Tue, 6 Oct 2026 18:10:11 -0300
-Subject: [PATCH 26/27] PS4: texture-cache audit, history and read-back off by
+Subject: [PATCH 26/31] PS4: texture-cache audit, history and read-back off by
  default (cache bug fixed)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

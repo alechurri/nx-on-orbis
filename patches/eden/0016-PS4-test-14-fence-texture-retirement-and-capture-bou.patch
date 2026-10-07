@@ -1,7 +1,7 @@
 From 0553bf6bc7901a8dcbb2fb14edb66c6f081b99be Mon Sep 17 00:00:00 2001
 From: alechurri <337117637+alechurri@users.noreply.github.com>
 Date: Sun, 4 Oct 2026 17:26:11 -0300
-Subject: [PATCH 16/27] PS4 test 14: fence texture retirement and capture
+Subject: [PATCH 16/31] PS4 test 14: fence texture retirement and capture
  bounded color diagnostics
 
 ---

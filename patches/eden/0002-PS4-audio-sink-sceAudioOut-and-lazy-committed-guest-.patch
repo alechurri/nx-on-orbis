@@ -1,7 +1,7 @@
 From afc5fd08f987d38f2d82823ce67b8b2ae7374d3e Mon Sep 17 00:00:00 2001
 From: alechurri <337117637+alechurri@users.noreply.github.com>
 Date: Sat, 3 Oct 2026 20:54:29 -0300
-Subject: [PATCH 02/27] PS4: audio sink (sceAudioOut) and lazy-committed guest
+Subject: [PATCH 02/31] PS4: audio sink (sceAudioOut) and lazy-committed guest
  RAM and large tables
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

@@ -1,7 +1,7 @@
 From 0df5d4b7d82623555cf698ed657abd60c3d071b3 Mon Sep 17 00:00:00 2001
 From: alechurri <337117637+alechurri@users.noreply.github.com>
 Date: Tue, 6 Oct 2026 12:32:35 -0300
-Subject: [PATCH 20/27] PS4: per-image texture-cache event history dumped at
+Subject: [PATCH 20/31] PS4: per-image texture-cache event history dumped at
  the first inconsistencies; view log keyed by size
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

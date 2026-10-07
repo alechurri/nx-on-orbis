@@ -1,7 +1,7 @@
 From 014633a9f3e45d73a0ca9c25dfe0c25460e16b70 Mon Sep 17 00:00:00 2001
 From: alechurri <337117637+alechurri@users.noreply.github.com>
 Date: Sun, 4 Oct 2026 01:20:16 -0300
-Subject: [PATCH 07/27] PS4: page table sign extension amount (JIT fast path),
+Subject: [PATCH 07/31] PS4: page table sign extension amount (JIT fast path),
  give freed guest pages back
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

@@ -1,0 +1,59 @@
+From b81554a4510e273bcdde1fafb829472075e4b2cd Mon Sep 17 00:00:00 2001
+From: alechurri <337117637+alechurri@users.noreply.github.com>
+Date: Tue, 6 Oct 2026 23:59:23 -0300
+Subject: [PATCH 30/31] ORBIS: fastmem view capped at 64 GiB with 4 GiB of
+ address space left after it
+
+A 256 GiB view left no room for the guest page table reserved after it.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/common/orbis_lazy_memory.cpp | 23 ++++++++++++++++++-----
+ 1 file changed, 18 insertions(+), 5 deletions(-)
+
+diff --git a/src/common/orbis_lazy_memory.cpp b/src/common/orbis_lazy_memory.cpp
+index 27c3437..394cda2 100644
+--- a/src/common/orbis_lazy_memory.cpp
++++ b/src/common/orbis_lazy_memory.cpp
+@@ -624,9 +624,12 @@ void* ReserveView(std::size_t& size) {
+     constexpr std::size_t Span = std::size_t{1} << ViewSpanBits;
+     g_view_asked = size;
+     size = (size + Span - 1) & ~(Span - 1);
+-    // Test 25: 512 GiB (a 39-bit guest) was refused. Halve until it fits; 4 GiB covers 32-bit
+-    // guests (MK8D) completely, and 64-bit ones get bounds-checked to what there is.
+-    std::size_t try_size = std::size_t{1} << 39;
++    // The console's address space is smaller than it looks: 512 GiB was refused (test 25), and
++    // 256 GiB went through but left no room for the guest page table reserved right after it
++    // (test 26 crashed loading the game). Start at 64 GiB, and keep a size only if 4 GiB can
++    // still be reserved after it. 4 GiB covers 32-bit guests (MK8D) completely; 64-bit ones get
++    // bounds-checked to what there is.
++    std::size_t try_size = std::size_t{1} << 36;
+     while (try_size > size) {
+         try_size >>= 1;
+     }
+@@ -634,10 +637,20 @@ void* ReserveView(std::size_t& size) {
+     for (; try_size >= (std::size_t{1} << 32); try_size >>= 1) {
+         base = nullptr;
+         const int rc = sceKernelReserveVirtualRange(&base, try_size, 0, std::size_t{1} << 21);
+-        if (rc == 0 && base != nullptr) {
++        if (rc != 0 || base == nullptr) {
++            g_view_error = rc;
++            base = nullptr;
++            continue;
++        }
++        void* headroom = nullptr;
++        const int hrc = sceKernelReserveVirtualRange(&headroom, std::size_t{4} << 30, 0,
++                                                     std::size_t{1} << 21);
++        if (hrc == 0 && headroom != nullptr) {
++            sceKernelMunmap(headroom, std::size_t{4} << 30);
+             break;
+         }
+-        g_view_error = rc;
++        g_view_error = hrc != 0 ? hrc : -1;
++        sceKernelMunmap(base, try_size);
+         base = nullptr;
+     }
+     if (base == nullptr) {
+-- 
+2.56.0.windows.1
+

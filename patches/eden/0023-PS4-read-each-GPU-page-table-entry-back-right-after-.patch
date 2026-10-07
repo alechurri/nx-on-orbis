@@ -1,7 +1,7 @@
 From 53e5cd4be3ea81b40d096746bd2f1b3da47c0cd4 Mon Sep 17 00:00:00 2001
 From: alechurri <337117637+alechurri@users.noreply.github.com>
 Date: Tue, 6 Oct 2026 16:57:48 -0300
-Subject: [PATCH 23/27] PS4: read each GPU page-table entry back right after
+Subject: [PATCH 23/31] PS4: read each GPU page-table entry back right after
  registering it
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

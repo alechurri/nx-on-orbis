@@ -1,7 +1,7 @@
 From 0890843837ddc4def548f5e76ca507b880e69d7d Mon Sep 17 00:00:00 2001
 From: alechurri <337117637+alechurri@users.noreply.github.com>
 Date: Tue, 6 Oct 2026 17:07:04 -0300
-Subject: [PATCH 24/27] PS4: use the standard library's hash containers instead
+Subject: [PATCH 24/31] PS4: use the standard library's hash containers instead
  of boost::unordered_flat_* (page-table entries went missing on the console)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
